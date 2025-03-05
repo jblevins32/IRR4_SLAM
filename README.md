@@ -1,6 +1,8 @@
 # IRR Lab 3
 This ROS2 package is a custom navigation program for turtlebot3 in ROS2. 
 
+Bug algorithm for state machine control selection - go to goal vs follow wall
+
 1. `ros2 launch turtlebot3_bringup camera_robot.launch.py` Launch turtlebot stack (includes camera)
 2. `ros2 run cost_map cost_map_pubsub` Run mapping node which subscribes to /scan and publishes the costmap to /map
 3. `ros2 run localization localization_pubsub` Run localization node which subscribes to /odom and /imu and publishes EKF fused localization to /odometry/filtered
