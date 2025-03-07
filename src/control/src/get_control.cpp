@@ -22,6 +22,7 @@ public:
       RCLCPP_INFO(this->get_logger(), "Starting Control Node");
 
       rclcpp::QoS qos = rclcpp::QoS(10).best_effort(); // Quality of Service
+      
       subscription_odom = this->create_subscription<nav_msgs::msg::Odometry>(
           "/odom_fixed", qos, std::bind(&control::odom_callback, this, _1)); // _1 means the function will allow one argument
       
@@ -35,12 +36,8 @@ public:
 
 private:
     
-    // Waypoint flags for state machine
-    bool wayPoint1_flag = true;
-    bool wayPoint1_rot_flag = false;
-    bool wayPoint2_flag = false;
-    bool wayPoint2_rot_flag = false;
-    bool wayPoint3_flag = false;
+    // Define current task
+    int task = 1;
 
     // Define sensor messages
     sensor_msgs::msg::LaserScan recent_scan;
@@ -75,16 +72,15 @@ private:
           // Get current pose from odom
           auto current_dist_x = recent_odom.pose.pose.position.x;
           auto current_dist_y = recent_odom.pose.pose.position.y;
-          double current_theta_z = quaternionToYaw(recent_odom.pose.pose.orientation);
-          RCLCPP_INFO(this->get_logger(), "yaw: %f", current_theta_z);
+          double current_yaw = quaternionToYaw(recent_odom.pose.pose.orientation);
 
           // Get current scan data in front of robot from odom
           auto current_scan = recent_scan.ranges;
           std::vector<float> current_scan_fov;
 
           // isolate the front 90 degrees of lidar scan
-          current_scan_fov.insert(current_scan_fov.end(), current_scan.begin() + 315, current_scan.end());
-          current_scan_fov.insert(current_scan_fov.end(), current_scan.begin(),current_scan.begin() + 45); 
+          current_scan_fov.insert(current_scan_fov.end(), current_scan.begin() + 300, current_scan.end());
+          current_scan_fov.insert(current_scan_fov.end(), current_scan.begin(),current_scan.begin() + 60); 
 
           // Instantiate a Twist for control command and defining desired distance
           auto twist_msg = geometry_msgs::msg::Twist();
@@ -100,154 +96,141 @@ private:
           float desired_y_3 = 1.4; // meters
 
           float obstacle_dist = 0.2; // meters to stay from obstacles
-          bool wall_follow_flag = false;
+          float obstacle_too_close = 0.1; // back up if too close
 
           // Set linear and angular speeds
           float lin_vel = 0.1;
           float ang_vel = 0.4;
 
           // Waypoint errors
-          auto dist_2_rot = std::abs(desired_theta_1 - current_theta_z);
-          auto dist_3_rot = std::abs(desired_theta_2 - current_theta_z);
+          float error_threshold = 0.01;
+          float error_threshold_rot = 0.05;
 
-          // Current errors based on state machine
+          // Current errors based on state machine, defined by tasks completed thus far
           float dist_x;
           float dist_y;
+          float desired_yaw;
 
-          if (wayPoint1_flag)
+          // Task 1: go to waypoint 1
+          if (task == 1)
           {
             dist_x = desired_x_1 - current_dist_x;
             dist_y = desired_y_1 - current_dist_y;
+            desired_yaw = std::atan2(dist_y, dist_x);
           }
-          else if (wayPoint2_flag)
+          // Task 2: rotate to waypoint 2
+          else if (task == 2)
+          {
+            desired_yaw = desired_theta_1;
+            dist_x = 100;
+            dist_y = 100;
+          }
+          // Task 3: go to waypoint 2
+          else if (task == 3)
           {
             dist_x = desired_x_2 - current_dist_x;
             dist_y = desired_y_2 - current_dist_y;
+            desired_yaw = std::atan2(dist_y, dist_x);
           }
-          else if (wayPoint3_flag)
+          // Task 4: rotate to waypoint 3
+          else if (task == 4)
+          {
+            desired_yaw = desired_theta_2;
+            dist_x = 100;
+            dist_y = 100;
+          }
+          // Task 5: go to waypoint 3
+          else if (task == 5)
           {
             dist_x = desired_x_3 - current_dist_x;
             dist_y = desired_y_3 - current_dist_y;
+            desired_yaw = std::atan2(dist_y, dist_x);
+          }
+          else
+          {
+            RCLCPP_INFO(this->get_logger(), "All tasks completed!");
+            twist_msg.linear.x = 0;
+            twist_msg.angular.z = 0;
+            publisher_cmdvel->publish(twist_msg);
+            return;
           }
 
-          // Desired orientation to the goal
-          float desired_orientation = std::atan2(dist_y, dist_x);
-
-          RCLCPP_INFO(this->get_logger(), "y %f, x %f, desired %f, actual %f", dist_y, dist_x, desired_orientation, current_theta_z);
+          int state = 0;
           
-          // RCLCPP_INFO(this->get_logger(), "Closest obstacle: %f", *std::min_element(current_scan_fov.begin(), current_scan_fov.end()));
-
           // STATE MACHINE START
-          if (std::abs(dist_x < 0.01)) // At the goal?
+          if (std::abs(dist_x) < error_threshold && std::abs(dist_y) < error_threshold) // At the goal?
           {
             twist_msg.linear.x = 0;
-            wayPoint1_rot_flag = true;
-            wayPoint1_flag = false;
+            task += 1; // mark a task completed to switch to the next state
           } 
-          else // Move towards the goal
-          {
-            // state 1: go to goal
-            if (wall_follow_flag == false)
-            {
-              twist_msg.linear.x = lin_vel; // move forward towards the goal
-              // RCLCPP_INFO(this->get_logger(), "yes");
 
-              // rotate the robot towards the goal if it ever gets off
-              if (desired_orientation - current_theta_z > 0.01)
-              {
-                twist_msg.angular.z = ang_vel;
-              }
-              else if (current_theta_z - desired_orientation > 0.01)
-              {
-                twist_msg.angular.z = -ang_vel;
-              }
+          else if (task != 2 && task != 4) // Move towards the goal
+          {
+            // Get min distance object in front of robot
+            float scan_min = *std::min_element(current_scan_fov.begin(), current_scan_fov.end());
+
+            // move forward towards the goal unless an object is placed in front of it
+            if (scan_min > obstacle_too_close)
+            {
+              // state 1: go to goal
+              state = 1;
+              twist_msg.linear.x = lin_vel; // Move forward
+            }
+            else
+            {
+              // State 2: back it up, too close to obstacle! (obstacle was probably placed right in front)
+              state = 2;
+              twist_msg.linear.x = -lin_vel; // Back it up!
             }
 
-            // State 2: wall follow: Check if an obstacle is close - only within the FoV of front of robot
-            if (*std::min_element(current_scan_fov.begin(), current_scan_fov.end()) < obstacle_dist)
+            // rotate the robot towards the goal
+            float yaw_error = getYawError(current_yaw, desired_yaw);
+            if (yaw_error > error_threshold_rot)
+            {
+              twist_msg.angular.z = ang_vel;
+            }
+            else if (-yaw_error > error_threshold_rot)
+            {
+              twist_msg.angular.z = -ang_vel;
+            }
+
+            // State 3: wall follow: Check if an obstacle is close - only within the FoV of front of robot
+            if (scan_min < obstacle_dist && scan_min > obstacle_too_close)
             {
               // Switch to wall following
-              wall_follow_flag = true;
-              twist_msg.linear.x = 0;
+              state = 3;
 
               // Rotate to go right around the object. Rotate until the close distance is at about degree 270 (left of straight)
-              if (current_scan[270] > obstacle_dist){
+              if (current_scan[260] > obstacle_dist){
+                twist_msg.linear.x = 0;
                 twist_msg.angular.z = ang_vel; // This should keep the obstacle to the left of the robot at this obstacle_dist
               }
-              else
-              {
-                twist_msg.angular.z = 0; 
-                twist_msg.linear.x = lin_vel; // move forward
-              }
-
-              // Check straight line to see if we can go back to state 1
-              // if ()
             }
           }
 
-          // // Rotate to face waypoint 2
-          // else if (wayPoint1_rot_flag) 
-          // {
-          //   if (dist_2_rot < 0.01) 
-          //   {
-          //       twist_msg.angular.z = 0;
-          //       wayPoint2_flag = true;
-          //       wayPoint1_rot_flag = false;
-          //   } 
-          //   else
-          //   {
-          //       twist_msg.angular.z = .25;
-          //       RCLCPP_INFO(this->get_logger(), "%f from facing toward waypoint 2", dist_2_rot);
-          //   }
-          // }
+          // State 4: rotate when task calls for it.
+          else 
+          {
+            state = 4;
+            twist_msg.linear.x = 0;
+            float yaw_error = getYawError(current_yaw, desired_yaw);
 
-          // // Velocity to waypoint 2
-          // else if (wayPoint2_flag) 
-          // {
-          //   if (dist_x < 0.1) 
-          //   {
-          //     twist_msg.linear.x = 0;
-          //     wayPoint2_rot_flag = true;
-          //     wayPoint2_flag = false;
-          //   } 
-          //   else
-          //   {
-          //     twist_msg.linear.x = .25;
-          //     RCLCPP_INFO(this->get_logger(), "%f from waypoint 2", dist_2);
-          //   }
-          // }
+            if (yaw_error > error_threshold_rot)
+            {
+              twist_msg.angular.z = ang_vel;
+            }
+            else if (-yaw_error > error_threshold_rot)
+            {
+              twist_msg.angular.z = -ang_vel;
+            }
+            else
+            {
+              task += 1; // mark a task completed to switch to the next state
+            }
+          }
 
-          // // Rotate to face waypoint 3
-          // else if (wayPoint2_rot_flag) 
-          // {
-          //   if (dist_3_rot < 0.01) 
-          //   {
-          //       twist_msg.angular.z = 0;
-          //       wayPoint3_flag = true;
-          //       wayPoint2_rot_flag = false;
-          //   } 
-          //   else
-          //   {
-          //       twist_msg.angular.z = .25;
-          //       RCLCPP_INFO(this->get_logger(), "%f from facing toward waypoint 3", dist_3_rot);
-          //   }
-          // }
-
-          // // Velocity to waypoint 3
-          // else if (wayPoint3_flag) 
-          // {
-          //   if (dist_3 < 0.1) 
-          //   {
-          //     twist_msg.linear.x = 0;
-          //     wayPoint3_flag = false;
-          //   } 
-          //   else
-          //   {
-          //     twist_msg.linear.x = .25;
-          //     RCLCPP_INFO(this->get_logger(), "%f from waypoint 3", dist_3);
-          //   }
-          // }
-          // // Publish the command velocity
+          // Publish the command velocity
+          RCLCPP_INFO(this->get_logger(), "Task %d, State %d, y error %f, x error %f, desired rot %f, actual rot %f", task, state, dist_y, dist_x, desired_yaw, current_yaw);
           publisher_cmdvel->publish(twist_msg);
       } 
     }
@@ -261,6 +244,20 @@ private:
       tf2::Matrix3x3(tf2_quat).getRPY(roll, pitch, yaw);
 
       return yaw;
+    }
+
+    float getYawError(float current_yaw, float desired_yaw)
+    {
+      float yaw_error = desired_yaw - current_yaw;
+      if (yaw_error > M_PI)
+      {
+        yaw_error -= 2*M_PI;
+      }
+      else if (yaw_error < -M_PI)
+      {
+        yaw_error += 2*M_PI;
+      }
+      return yaw_error;
     }
 
     // memory management in cpp
