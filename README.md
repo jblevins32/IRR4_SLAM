@@ -1,4 +1,4 @@
-# IRR Lab 3
+# IRR Lab 4
 This ROS2 package is a custom navigation program using the bug algorithm for turtlebot3 in ROS2. 
 
 ## How it Works

@@ -22,7 +22,7 @@ public:
       RCLCPP_INFO(this->get_logger(), "Starting Control Node");
 
       rclcpp::QoS qos = rclcpp::QoS(10).best_effort(); // Quality of Service
-      
+
       subscription_odom = this->create_subscription<nav_msgs::msg::Odometry>(
           "/odom_fixed", qos, std::bind(&control::odom_callback, this, _1)); // _1 means the function will allow one argument
       
@@ -79,8 +79,10 @@ private:
           std::vector<float> current_scan_fov;
 
           // isolate the front 90 degrees of lidar scan
-          current_scan_fov.insert(current_scan_fov.end(), current_scan.begin() + 300, current_scan.end());
-          current_scan_fov.insert(current_scan_fov.end(), current_scan.begin(),current_scan.begin() + 60); 
+          // current_scan_fov.insert(current_scan_fov.end(), current_scan.begin() + 300, current_scan.end());
+          // current_scan_fov.insert(current_scan_fov.end(), current_scan.begin(),current_scan.begin() + 60); 
+          current_scan_fov.insert(current_scan_fov.end(), current_scan.begin() + 190, current_scan.end());
+          current_scan_fov.insert(current_scan_fov.end(), current_scan.begin(),current_scan.begin() + 29); 
 
           // Instantiate a Twist for control command and defining desired distance
           auto twist_msg = geometry_msgs::msg::Twist();
@@ -95,12 +97,12 @@ private:
           float desired_x_3 = 0; // meters
           float desired_y_3 = 1.4; // meters
 
-          float obstacle_dist = 0.2; // meters to stay from obstacles
+          float obstacle_dist = 0.3; // meters to stay from obstacles
           float obstacle_too_close = 0.1; // back up if too close
 
           // Set linear and angular speeds
           float lin_vel = 0.1;
-          float ang_vel = 0.4;
+          float ang_vel = 0.35;
 
           // Waypoint errors
           float error_threshold = 0.01;
@@ -170,18 +172,9 @@ private:
             float scan_min = *std::min_element(current_scan_fov.begin(), current_scan_fov.end());
 
             // move forward towards the goal unless an object is placed in front of it
-            if (scan_min > obstacle_too_close)
-            {
-              // state 1: go to goal
-              state = 1;
-              twist_msg.linear.x = lin_vel; // Move forward
-            }
-            else
-            {
-              // State 2: back it up, too close to obstacle! (obstacle was probably placed right in front)
-              state = 2;
-              twist_msg.linear.x = -lin_vel; // Back it up!
-            }
+            // state 1: go to goal
+            state = 1;
+            twist_msg.linear.x = lin_vel; // Move forward
 
             // rotate the robot towards the goal
             float yaw_error = getYawError(current_yaw, desired_yaw);
@@ -195,14 +188,15 @@ private:
             }
 
             // State 3: wall follow: Check if an obstacle is close - only within the FoV of front of robot
-            if (scan_min < obstacle_dist && scan_min > obstacle_too_close)
+            if (scan_min < obstacle_dist)
             {
               // Switch to wall following
               state = 3;
 
               // Rotate to go right around the object. Rotate until the close distance is at about degree 270 (left of straight)
-              if (current_scan[260] > obstacle_dist){
-                twist_msg.linear.x = 0;
+              // if (current_scan[260] > obstacle_dist){
+              if (current_scan[158] > obstacle_dist){
+                twist_msg.linear.x = lin_vel/5;
                 twist_msg.angular.z = ang_vel; // This should keep the obstacle to the left of the robot at this obstacle_dist
               }
             }
