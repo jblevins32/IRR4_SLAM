@@ -4,9 +4,9 @@ This ROS2 package is a custom navigation program using the bug algorithm for tur
 ## How it Works
 The control node has 5 tasks and 4 states in a state machine:
 #### Tasks:
-1. Go to wayPoint 1
+1. Go to wayPoint 1, pause 10 seconds
 2. Rotate towards to wayPoint 2
-3. Go to wayPoint 2
+3. Go to wayPoint 2, pause 10 seconds
 4. Rotate towards to wayPoint 2
 5. Go to wayPoint 3
 #### States (controllers):

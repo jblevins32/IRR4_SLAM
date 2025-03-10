@@ -211,7 +211,7 @@ private:
           {
             state = 4;
 
-            // Pause before doing task 2
+            // Pause before doing tasks 2 and 4
             if (pause_flag == false)
             {
               std::this_thread::sleep_for(std::chrono::seconds(10));
