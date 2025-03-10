@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iostream>
 #include <chrono>
+#include <thread>
 #include <algorithm>
 
 using std::placeholders::_1;
@@ -44,6 +45,7 @@ private:
     nav_msgs::msg::Odometry recent_odom;
     bool odom_received = false;
     bool scan_received = false;
+    bool pause_flag = false;
 
     // callback to capture recent scan
     void scan_callback(const sensor_msgs::msg::LaserScan & laser_msg) // message type & variable name
@@ -168,6 +170,8 @@ private:
 
           else if (task != 2 && task != 4) // Move towards the goal
           {
+            pause_flag = false;
+
             // Get min distance object in front of robot
             float scan_min = *std::min_element(current_scan_fov.begin(), current_scan_fov.end());
 
@@ -206,6 +210,14 @@ private:
           else 
           {
             state = 4;
+
+            // Pause before doing task 2
+            if (pause_flag == false)
+            {
+              std::this_thread::sleep_for(std::chrono::seconds(10));
+              pause_flag = true;
+            }
+
             twist_msg.linear.x = 0;
             float yaw_error = getYawError(current_yaw, desired_yaw);
 
